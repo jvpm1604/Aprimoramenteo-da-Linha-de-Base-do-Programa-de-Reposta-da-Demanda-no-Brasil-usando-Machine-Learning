@@ -1,0 +1,7 @@
+estimador,NOVELIS,ICB,BOULEVARD RIO,TOP SHOPPING
+1_estatica,19.36,16.44,17.93,9.91
+2_aditivo,14.67,8.34,10.32,7.26
+3_multiplicativo,15.85,8.32,10.87,6.78
+4_RF_exante,16.61,14.07,12.72,11.56
+5_RF_completo,9.84,4.61,7.9,7.62
+6_TOWT,16.38,13.4,12.83,11.38

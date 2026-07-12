@@ -1,0 +1,120 @@
+# Armadilhas metodológicas e divergências
+
+Documento vivo. Registra (a) os erros que este pipeline evita de propósito e (b) os pontos em
+que a reprodução **não** bate com o texto atual do TCC.
+
+---
+
+## Parte 1 — Armadilhas que o código evita de propósito
+
+### 1. Comparar o RF *ex ante* com a média e concluir que "ML perde"
+A linha de base da CCEE **não** é um modelo de clima/calendário: é, na prática, um **estimador de
+recência** (média da mesma hora, mesmo tipo de dia, do mês recente). Ela já embute a informação
+que o `lag_168h` carrega. Tirar as defasagens do RF é compará-lo *sem memória* contra um
+estimador que *é* memória. Não é defeito do RF — é assimetria de informação.
+
+O comparador informacionalmente justo do ML é o **RF completo**; e o comparador *regulatoriamente*
+justo do ajuste intradiário é o **RF ex ante**, porque ambos dispõem só de informação prévia ao
+evento. Manter os dois na tabela é o que torna o argumento legível.
+
+### 2. Vazamento de defasagem em eventos de múltiplas horas
+Dentro de um evento, o `lag_1h` medido já está **reduzido**. Alimentar o modelo com ele rebaixa o
+contrafactual e subestima a redução. `models.prever_recursivo` realimenta o `lag_1h` com a própria
+previsão.
+
+**Mas isso não basta.** Quando há despachos em dias seguidos (ICB: 24 das 76 horas), `lag_24h` e
+`lag_168h` também caem dentro de horas de evento. Não há recursão simples que corrija isso. Por
+isso o **ML não entra na trilha financeira** — apenas na trilha de acurácia, onde os eventos
+fictícios garantem lags limpos por construção.
+
+### 3. Avaliar estimadores em conjuntos de linhas diferentes
+Se a linha de base é NaN em domingo (a grade útil/sábado não o cobre) mas o RF prevê lá, a CCEE é
+avaliada em `n=20` e o RF em `n=25` — e a comparação é inválida. `dummy_events.avaliar_agente`
+impõe uma máscara **comum** a todos os estimadores. O script 06 faz o mesmo. **Isto não é
+preciosismo: é exatamente onde a Trilha B do TCC quebra (ver Parte 2).**
+
+### 4. Tratar a previsão do ML como "o volume real"
+O contrafactual não é observável. A previsão é estimativa com erro (o CV(RMSE) que se mede). Toda
+saída financeira sai com faixa de incerteza ou IC por bootstrap — nunca como número cravado.
+
+### 5. Ignorar o retificador `max(0, ·)`
+Truncar em zero, hora a hora, faz com que **qualquer** linha de base ruidosa — mesmo sem viés —
+super-credite sistematicamente (Jensen). Por isso a distorção sempre aparece em duas versões,
+truncada e líquida: a diferença isola o efeito da regra.
+
+### 6. Calcular lag por posição, e não por tempo
+Numa série com lacunas, `shift(24)` sobre as linhas existentes não é "24 horas atrás". O script 00
+reindexa numa grade horária completa antes de deslocar; o script 01 verifica.
+
+---
+
+## Parte 2 — Divergências entre este pipeline e o texto atual do TCC
+
+Reproduzido com `dataset_TCC_final_TCC.csv` + `scripts/02` (defasagem M−2).
+
+### ✅ Reproduz exatamente
+| Resultado | TCC | Pipeline |
+|---|---|---|
+| Ajuste aditivo melhora | 42/43 agentes | **42/43** |
+| CV(RMSE) mediano, aditivo | 13,3% | **13,32%** |
+| Crédito espúrio, aditivo | 4,5% | **4,57%** |
+| Redução do crédito espúrio | 53% | **53%** |
+| Monte Carlo (constante de Jensen) | 0,398σ | **0,398σ** |
+| RF completo (Novelis / ICB / Boulevard) | 9,89 / 4,60 / 7,93 | **9,84 / 4,61 / 7,90** |
+| TOWT (ICB / Boulevard) | 13,42 / 13,04 | **13,40 / 12,83** |
+| Incerteza ASHRAE (teto de ML) | 53 / 26 / 13 | **53 / 26 / 13** |
+| Termossensibilidade (Boulevard/Top/ICB) | +0,61 / +0,60 / −0,23 | **+0,614 / +0,605 / −0,227** |
+
+### ⚠️ Divergência 1 — a linha de base estática ficou mais ruidosa
+
+| | TCC | Pipeline |
+|---|---|---|
+| CV(RMSE) mediano, estática | 23,6% | **25,19%** |
+| \|NMBE\| mediano, estática | 3,35% | 3,83% |
+| CV(RMSE) estática — Boulevard | 14,25 | 17,93 |
+| CV(RMSE) estática — ICB | 14,97 | 16,44 |
+
+**Causa provável:** o `dataset_TCC_baseline_fiel.csv` original foi gerado por um script que não
+tenho; reconstruí `calcular_baseline_ccee` a partir da descrição normativa do Capítulo 3. Os
+candidatos a diferença são o `K` do critério MAD, o limiar de zeros espúrios, a regra dos sábados
+e a defasagem adotada.
+
+**Não altera nenhuma conclusão** — só desloca o ponto de partida (o ganho do ajuste fica *maior*).
+**Como resolver:** subir o `dataset_TCC_baseline_fiel.csv` original; comparo as duas colunas de
+linha de base agente a agente e identifico a regra divergente em minutos.
+
+### 🔴 Divergência 2 — a Trilha B (Tabela 4.5) **NÃO reproduz**. Precisa de decisão.
+
+O TCC afirma: na onda de calor, *"o Random Forest satura e falha (10,72%), estatisticamente
+indistinguível da média estática (10,65%); é o TOWT que protege (7,25%)"*.
+
+Investigando: dos 5 dias mais quentes do Boulevard, **`2026-01-11` é um domingo** — que **não tem
+linha de base** (a grade útil/sábado não o cobre). No script original, a CCEE foi avaliada em
+`n=20` e o RF/TOWT em `n=25`. **Os três estimadores não estavam nas mesmas linhas.**
+
+Ao alinhar (mesmas 20 observações):
+
+| Estimador | TCC (n desalinhado) | Pipeline (n=20 alinhado) |
+|---|---|---|
+| Estática (CCEE) | 10,65 | 16,40 |
+| Random Forest | 10,72 | **11,98** |
+| TOWT | **7,25** | **13,20** |
+
+Com as linhas alinhadas, **o RF fica melhor que o TOWT**, e ambos batem a média com folga. A
+vantagem do TOWT no texto vem, em boa parte, do domingo extra que só ele e o RF avaliavam — e o
+domingo é uma carga comercial baixa, mais fácil de prever.
+
+**Implicação para o texto:** a Seção 4.4 e o parágrafo da Conclusão que dizem *"o RF saturou e
+falhou, ao passo que o TOWT protegeu o agente"* **não estão sustentados pelos dados alinhados**.
+Este é o tipo de coisa que uma banca atenta pega.
+
+**Ressalva honesta:** minha reconstrução da linha de base e do `treino_valido` difere da original
+(Divergência 1), então não posso afirmar que o número do TCC está *errado* — apenas que **não
+reproduz** e que o desalinhamento de `n` é uma explicação concreta e verificável. É preciso rodar
+o script original com as linhas alinhadas antes de decidir.
+
+**Encaminhamento sugerido:** rodar `scripts/06_onda_calor.py` sobre o
+`dataset_TCC_baseline_fiel.csv` **original**. Se o TOWT continuar perdendo, a Tabela 4.5 e o
+argumento de extrapolação precisam ser reescritos. A tese central **não depende disso** — o
+ajuste intradiário é o eixo, e ele se sustenta. Mas a afirmação sobre extrapolação térmica
+precisa cair ou ser requalificada.

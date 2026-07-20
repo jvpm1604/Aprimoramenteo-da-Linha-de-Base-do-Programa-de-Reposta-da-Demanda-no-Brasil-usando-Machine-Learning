@@ -1,10 +1,10 @@
-# Linhas de Base para Resposta da Demanda — código do TCC
+# Linhas de Base para Resposta da Demanda - código do TCC
 
 Código do Trabalho de Conclusão de Curso **"Aplicação de Algoritmos de Machine Learning para
 Determinação de Linhas de Base no Âmbito do Sandbox Regulatório de Resposta da Demanda"**
-(João Vitor Pires Marinho — UFRJ / Escola Politécnica / DEE, 2026).
+(João Vitor Pires Marinho - UFRJ, DEE)
 
-## A tese, em uma frase
+## Resumo do trabalho:
 
 A linha de base da CCEE — média horária mensal publicada *ex ante* — corresponde à etapa
 **não ajustada** das metodologias de mercados maduros (NESO, AEMO, ISO-NE). Falta-lhe o

@@ -1,14 +1,14 @@
 """
 Script 01 — Auditoria de integridade da base.
 
-Motivo: toda a modelagem depende do ALINHAMENTO TEMPORAL. Uma falha silenciosa
-de defasagem (comum quando há lacunas e o lag é calculado por deslocamento de
-POSIÇÃO em vez de TEMPO) enviesaria todos os modelos sem gerar erro aparente.
+Motivo: toda essa base incial (modelagem) depende do ALINHAMENTO TEMPORAL EM BASE HORÁRIA. Uma falha simples
+de defasagem (comum quando há lacunas e o lag é calculado por deslocamento de POSIÇÃO em vez de TEMPO) 
+enviesaria todos os modelos sem gerar erro aparente, comprometendo o projeto ..
 
-Verifica, por agente:
-  1. contiguidade horária (diferenças consecutivas == 1h);
+Aqui será verificado, por agente:
+  1. continuidade horária (diferenças consecutivas == 1h);
   2. unicidade temporal (sem horários duplicados);
-  3. alinhamento das defasagens: lag_k(t) == y(t-k), k in {1, 24, 168}.
+  3. alinhamento das defasagens: lag_k(t) == y(t-k), k in {1, 24, 168}. -> Features temporais.
 
 Uso:  python scripts/01_auditoria_base.py
 """

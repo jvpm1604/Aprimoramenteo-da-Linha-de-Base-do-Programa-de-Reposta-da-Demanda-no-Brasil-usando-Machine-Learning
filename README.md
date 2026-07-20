@@ -51,7 +51,7 @@ scripts/                pipeline executável, em ordem
   08_truncamento_jensen.py  Monte Carlo + figura de Jensen    [Seção 4.5]
   09_incerteza_ashrae.py    incerteza da economia             [Tabela 4.7]
 
-data/raw/               dados brutos (NÃO versionados)
+data/raw/               dados brutos
   ccee/  inmet/  pld/
 data/interim/           dataset_TCC_final_TCC.csv
 data/processed/         dataset_TCC_baseline_fiel.csv
@@ -66,11 +66,11 @@ docs/                   MAPA_TCC.md (código -> tabela/figura) e ARMADILHAS.md
 pip install -r requirements.txt
 
 # coloque dataset_TCC_final_TCC.csv em data/interim/
-# (ou rode o 00 a partir dos dados brutos da CCEE/INMET)
+# (ou roda o 00 a partir dos dados brutos da CCEE/INMET(ideal, considerando dados mais atualizados))
 
 python scripts/01_auditoria_base.py        # audita ANTES de qualquer análise
 python scripts/02_features_e_baseline.py   # gera a linha de base fiel
-python scripts/03_termossensibilidade.py
+python scripts/03_termossensibilidade.py   
 python scripts/04_tabela_degrau.py
 python scripts/05_populacional.py          # --ml para incluir RF/TOWT nos 43
 python scripts/06_onda_calor.py

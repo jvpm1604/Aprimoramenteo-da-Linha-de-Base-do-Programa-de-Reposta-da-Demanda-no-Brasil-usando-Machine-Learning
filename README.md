@@ -23,7 +23,7 @@ proposta operacional**.
 | (iii) | RF *ex ante*, RF completo, TOWT | teto de acurácia e diagnóstico da física da carga |
 
 Comparar (ii) com (i) mede o efeito do ajuste. Comparar (iii) com os demais mede quanto ainda
-seria recuperável por um modelo complexo — e, portanto, se o ajuste simples basta.
+seria recuperável por um modelo complexo, e se o ajuste simples basta.
 
 ## Estrutura
 

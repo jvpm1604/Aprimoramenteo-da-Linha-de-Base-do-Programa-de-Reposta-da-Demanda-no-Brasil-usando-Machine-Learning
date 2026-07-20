@@ -1,12 +1,20 @@
 """
-Script 00 — Ingestão e consolidação da base horária (produz dataset_TCC_final_TCC.csv).
+Script 00 — Consolidação da base horária (produz dataset_TCC_final_TCC.csv) que é o insumo exclusivo do projeto.
+Nesse arquivo vou unir todos os dados necessários para análise da baseline atual, influência da Temperatura,
+e proposta de melhoria para criação de nova metodologia de Baseline.
 
   medição CCEE (SMF)  +  clima INMET  +  calendário  ->  uma linha por agente-hora
 
-ATENÇÃO — este script é uma RECONSTRUÇÃO DOCUMENTADA do pipeline original (que
-rodava no Google Colab sobre o Drive). Os leitores dos arquivos brutos dependem
-do layout exato dos seus arquivos da CCEE e do INMET; ajuste `ler_ccee` e
-`ler_inmet` conforme necessário. O contrato de SAÍDA, esse sim, é fixo — é o que
+Obs: este script é uma reconstrução documentada do pipeline original (que
+rodava no Google Colab sobre o Drive). Por via das dúvidas, deixarei aqui os links de Dados Abertos usados para facilitar
+o entendimento e possível interesse de reconstrução por parte do Leitor, destacando que A ESTRUTURA E ATÉ CAMINHO (LINK)
+PARA OS DADOS PODE ALTERAR, CONSIDERANDO O MOMENTO QUE A CONSULTA SERÁ REALIZADA:
+
+Consumo horário dos Agente: https://dadosabertos.ccee.org.br/dataset/consumo_horario_perfil_agente
+Dados metereológicos Brasileiros: https://portal.inmet.gov.br/dadoshistoricos
+Dados relativos ao Sandbox de RD: https://dadosabertos.ccee.org.br/dataset/rd_disp_despacho_horario_sandbox
+
+Ajuste `ler_ccee` e `ler_inmet` conforme necessário. O contrato de SAÍDA, esse sim, é fixo — é o que
 os scripts 01+ consomem:
 
     SIGLA_PERFIL_AGENTE; DATA_DT; HORA; CONS_MW;
@@ -15,7 +23,7 @@ os scripts 01+ consomem:
     SINALIZADOR_HORARIO_ATEND_PROD; dia_semana; feriado;
     DATA_STR; CODIGO_PERFIL_AGENTE; lag_1h; lag_24h; lag_168h
 
-DECISÕES QUE IMPORTAM (e por quê):
+DECISÕES QUE IMPORTAM (e por quê(?)):
   1. Um agente pode ter MÚLTIPLOS medidores (SMF). Somam-se as cargas por
      perfil de agente -> a variável-alvo é o consumo do PERFIL, não do medidor.
   2. O INMET publica em UTC. Converte-se para Brasília (UTC-3) ANTES do
@@ -24,6 +32,24 @@ DECISÕES QUE IMPORTAM (e por quê):
      instante) e sobre uma grade horária COMPLETA. Calcular lag por deslocamento
      de POSIÇÃO numa série com lacunas produz desalinhamento silencioso — o erro
      que o script 01 existe para pegar.
+  4. TEMPERATURA (INMET) tem duas limpezas antes de virar dado utilizável:
+     (a) o INMET usa -9999 como sinonimo de "sem leitura", e sem mascarar isso
+         antes de qualquer conta, -9999°C entra como se fosse um valor real e
+         destrói qualquer média/correlação que toque a série;
+     (b) lacunas CURTAS (até 3 horas) são preenchidas por interpolação linear,
+         que preserva a tendência térmica local; lacunas mais longas que isso
+         permanecem como NaN de propósito — não se inventa clima para além do
+         que é razoável interpolar. Ambas as limpezas rodam por ESTAÇÃO,
+         nunca misturando a série de uma estação com a de outra.
+  5. Um agente pode ter MÚLTIPLAS OFERTAS de RD na mesma hora (lotes
+     empilhados por ordem de mérito — comportamento normal do mercado, não
+     erro). A consolidação por agente-hora precisa SOMAR o montante entre as
+     ofertas e tomar o MÁXIMO do sinalizador de despacho (1 se qualquer oferta
+     daquela hora foi confirmada). Usar "pegue a primeira" (`first`) aqui é um
+     bug real, não uma simplificação: ele pode descartar justamente a oferta
+     que tinha o despacho confirmado, fazendo um dia de evento real parecer,
+     para o resto do pipeline, um dia comum — contaminando silenciosamente o
+     cálculo da linha de base com consumo que já estava reduzido.
 
 Uso:  python scripts/00_build_dataset.py
 """
@@ -40,9 +66,19 @@ from src import config as cfg
 TZ_INMET = 3  # INMET em UTC -> Brasilia = UTC-3
 
 
-# ---------------------------------------------------------------- CCEE
+# ----- CCEE (base de código para direcionamento do Leitor)
 def ler_ccee(pasta=None) -> pd.DataFrame:
-    """Lê os arquivos de medição/contabilização da CCEE e consolida por perfil."""
+    """Lê os arquivos de medição/contabilização da CCEE e consolida por perfil.
+
+    Consolidação em dois níveis, cada um com sua regra própria (ver decisões
+    1 e 5 no cabeçalho):
+      - CONS_MW            -> SOMA (múltiplos medidores do mesmo agente)
+      - MONTANTE_PRELIMINAR_RD -> SOMA (múltiplas ofertas na mesma hora)
+      - SINALIZADOR_HORARIO_ATEND_PROD -> MÁXIMO (1 se QUALQUER oferta confirmou despacho)
+      - demais metadados (CATEGORIA, CLASSE, PRODUTO, OFERTA) -> primeira
+        ocorrência, por serem estáveis dentro do agente-hora e não terem
+        uma regra de agregação numérica óbvia.
+    """
     pasta = pasta or cfg.RAW_CCEE
     arquivos = sorted(glob.glob(os.path.join(str(pasta), "*.csv")))
     if not arquivos:
@@ -55,16 +91,37 @@ def ler_ccee(pasta=None) -> pd.DataFrame:
     df["DATA_DT"] = pd.to_datetime(df["DATA_DT"], errors="coerce")
     df["HORA"] = df["HORA"].astype(int)
 
+    if "MONTANTE_PRELIMINAR_RD" in df.columns:
+        df["MONTANTE_PRELIMINAR_RD"] = pd.to_numeric(
+            df["MONTANTE_PRELIMINAR_RD"], errors="coerce"
+        ).fillna(0.0)
+    if "SINALIZADOR_HORARIO_ATEND_PROD" in df.columns:
+        df["SINALIZADOR_HORARIO_ATEND_PROD"] = pd.to_numeric(
+            df["SINALIZADOR_HORARIO_ATEND_PROD"], errors="coerce"
+        ).fillna(0).astype(int)
+
     # (1) soma dos medidores por perfil de agente
     chave = ["SIGLA_PERFIL_AGENTE", "CODIGO_PERFIL_AGENTE", "DATA_DT", "HORA"]
-    meta = ["CATEGORIA", "CLASSE", "PRODUTO", "OFERTA",
-            "MONTANTE_PRELIMINAR_RD", "SINALIZADOR_HORARIO_ATEND_PROD"]
+
     agg = {"CONS_MW": "sum"}
-    agg.update({c: "first" for c in meta if c in df.columns})
-    return df.groupby(chave, as_index=False).agg(agg)
+    if "MONTANTE_PRELIMINAR_RD" in df.columns:
+        agg["MONTANTE_PRELIMINAR_RD"] = "sum"      # (5) soma entre ofertas simultâneas
+    if "SINALIZADOR_HORARIO_ATEND_PROD" in df.columns:
+        agg["SINALIZADOR_HORARIO_ATEND_PROD"] = "max"  # (5) 1 se QUALQUER oferta despachou
+
+    meta_estavel = ["CATEGORIA", "CLASSE", "PRODUTO", "OFERTA"]
+    agg.update({c: "first" for c in meta_estavel if c in df.columns})
+
+    n_antes = len(df)
+    consolidado = df.groupby(chave, as_index=False).agg(agg)
+    n_colisoes = int((df.groupby(chave).size() > 1).sum())
+    print(f"  [ler_ccee] {n_antes} linhas brutas -> {len(consolidado)} agente-hora "
+          f"({n_colisoes} horas tinham mais de uma oferta/medidor, agregadas por soma+max)")
+
+    return consolidado
 
 
-# ---------------------------------------------------------------- INMET
+# ---- INMET
 COLMAP_INMET = {
     "TEMPERATURA DO AR - BULBO SECO, HORARIA (°C)": "temp_c",
     "UMIDADE RELATIVA DO AR, HORARIA (%)": "umid_rel",
@@ -74,12 +131,17 @@ COLMAP_INMET = {
 }
 
 def ler_inmet(pasta=None) -> pd.DataFrame:
-    """Lê estações automáticas do INMET, converte UTC->UTC-3 e devolve por estação/hora."""
+    """Lê estações automáticas do INMET, converte UTC -> UTC-3 e devolve por estação/hora.
+
+    Duas limpezas acontecem aqui (ver decisão 4 no cabeçalho):
+      - sentinela -9999 (código do INMET para "sem leitura") vira NaN;
+      - lacunas de até 3 horas são interpoladas linearmente, por estação.
+    """
     pasta = pasta or cfg.RAW_INMET
     arquivos = sorted(glob.glob(os.path.join(str(pasta), "**", "*.CSV"), recursive=True))
     arquivos += sorted(glob.glob(os.path.join(str(pasta), "**", "*.csv"), recursive=True))
     if not arquivos:
-        raise FileNotFoundError(f"Nenhum arquivo do INMET em {pasta}")
+        raise FileNotFoundError(f"Nenhum arquivo do INMET em {pasta}!")
 
     partes = []
     for f in arquivos:
@@ -102,14 +164,16 @@ def ler_inmet(pasta=None) -> pd.DataFrame:
 
         cols = [c for c in COLMAP_INMET.values() if c in d.columns]
         d[cols] = d[cols].apply(pd.to_numeric, errors="coerce")
-        d.loc[:, cols] = d[cols].mask(d[cols] <= -9999)   # sentinela de faltante do INMET
+        # (4a) sentinela de faltante do INMET -> NaN (senão -9999°C entra como dado real)
+        d.loc[:, cols] = d[cols].mask(d[cols] <= -9999)
         partes.append(d[["estacao", "DATETIME"] + cols])
 
     inmet = pd.concat(partes, ignore_index=True).dropna(subset=["DATETIME"])
     inmet["DATA_DT"] = inmet["DATETIME"].dt.normalize()
     inmet["HORA"] = inmet["DATETIME"].dt.hour
 
-    # interpolacao de lacunas curtas, preservando a tendencia
+    # (4b) interpolacao de lacunas curtas (<=3h), preservando a tendencia, por estacao
+    # (nunca entre estacoes diferentes: o groupby garante isso).
     cols = [c for c in COLMAP_INMET.values() if c in inmet.columns]
     inmet[cols] = (inmet.sort_values("DATETIME").groupby("estacao")[cols]
                    .transform(lambda s: s.interpolate(limit=3)))
@@ -118,16 +182,26 @@ def ler_inmet(pasta=None) -> pd.DataFrame:
 
 # ---------------------------------------------------------------- calendário
 def calendario(datas: pd.Series) -> pd.DataFrame:
-    """dia_semana (0=seg) e feriado nacional."""
+    """dia_semana (0=seg) e feriado nacional.
+
+    ATENÇÃO: sem o pacote `holidays`, feriados NÃO são excluídos do cálculo da
+    linha de base — e feriados costumam ter consumo bem menor que um dia útil
+    comum, então essa omissão contaminaria a média silenciosamente. Por isso,
+    a ausência do pacote é tratada como ERRO, não como aviso ignorável.
+    """
     d = pd.DataFrame({"DATA_DT": pd.to_datetime(datas.unique())})
     d["dia_semana"] = d["DATA_DT"].dt.dayofweek
     try:
         import holidays
-        br = holidays.Brazil(years=range(2023, 2028))
-        d["feriado"] = d["DATA_DT"].dt.date.map(lambda x: int(x in br))
-    except ImportError:
-        print("  [aviso] pacote `holidays` ausente -> feriado=0. Instale: pip install holidays")
-        d["feriado"] = 0
+    except ImportError as e:
+        raise ImportError(
+            "Pacote `holidays` ausente. Sem ele, feriados nacionais NÃO seriam "
+            "excluídos do cálculo da linha de base, contaminando a média com dias "
+            "de consumo atipicamente baixo. Instale antes de continuar: "
+            "pip install holidays"
+        ) from e
+    br = holidays.Brazil(years=range(2023, 2028))
+    d["feriado"] = d["DATA_DT"].dt.date.map(lambda x: int(x in br))
     return d
 
 

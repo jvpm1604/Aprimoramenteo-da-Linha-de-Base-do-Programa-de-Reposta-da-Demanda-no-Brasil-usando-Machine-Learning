@@ -1,87 +1,101 @@
 """
-Script 05 — Validação populacional nos 43 agentes (Seção 4.3 + Apêndice A + boxplot).
+Modelos de Machine Learning usados como REFERÊNCIA DE ACURÁCIA (teto), não como
+proposta operacional.
 
-Por que populacional: estimativas por agente são frágeis (poucos eventos, ruído
-alto). Sobre a totalidade dos agentes, o ruído individual se cancela e sobra o
-sinal sistemático. É o método de avaliação em larga escala do LBNL.
-
-Calcula, por agente, em eventos fictícios (verdade de campo -> redução real = 0):
-  - CV(RMSE) e NMBE sob a linha de base estática e sob os dois ajustes;
-  - CRÉDITO ESPÚRIO = media(max(0, B - y)) / media(y), em % da carga.
-    Como a redução verdadeira é NULA, todo esse volume é erro puro.
-
-Saídas: tabela por agente (Apêndice A) + fig_boxplot_populacional.png
-
-Uso:  python scripts/05_populacional.py            (sem ML, rápido)
-      python scripts/05_populacional.py --ml       (com RF/TOWT, lento)
+  - RandomForest ex ante  : calendário + clima, SEM defasagens.
+        Mesma classe de informação da linha de base publicada -> comparador justo.
+  - RandomForest completo : + defasagens (1h, 24h, 168h).
+        Teto de acurácia quando há acesso à recência da carga.
+  - TOWT (Time-Of-Week and Temperature, CalTRACK/CAISO):
+        168 indicadores de hora-da-semana + resposta térmica LINEAR POR PARTES.
+        Diferentemente das árvores, EXTRAPOLA além da faixa de treino — decisivo
+        em ondas de calor, onde o RF satura no máximo aprendido.
 """
-import argparse, sys, pathlib
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
 
-from src import config as cfg
-from src.dummy_events import avaliar_agente
-from src.metrics import cvrmse, nmbe
-from src.truncamento import credito_espurio_empirico
+from . import config as cfg
 
-ROTULOS = {"1_estatica": "Estatica (CCEE)", "2_aditivo": "Aditivo", "3_multiplicativo": "Multiplicativo"}
 
-def main(com_ml: bool):
-    df = pd.read_csv(cfg.DS_BASELINE, low_memory=False)
-    df["DATETIME"] = pd.to_datetime(df["DATETIME"]); df["data"] = pd.to_datetime(df["data"])
+def novo_rf() -> RandomForestRegressor:
+    return RandomForestRegressor(
+        n_estimators=cfg.RF_N_ESTIMATORS,
+        min_samples_leaf=cfg.RF_MIN_SAMPLES_LEAF,
+        random_state=cfg.RANDOM_STATE,
+        n_jobs=-1,
+    )
 
-    linhas = []
-    for ag, d in df.groupby("SIGLA_PERFIL_AGENTE"):
-        r = avaliar_agente(d, com_ml=com_ml)
-        if r is None:
-            print(f"  [pulado] {ag}"); continue
-        row = dict(agente=ag, dias=r["n_dias"], obs=r["n_obs"])
-        for k, p in r["pred"].items():
-            row[f"CVR_{k}"] = round(cvrmse(r["y"], p), 2)
-            row[f"NMBE_{k}"] = round(nmbe(r["y"], p), 2)
-            row[f"SP_{k}"] = round(credito_espurio_empirico(p, r["y"]), 2)
-        linhas.append(row)
 
-    t = pd.DataFrame(linhas).sort_values("CVR_1_estatica", ascending=False)
-    t.to_csv(cfg.OUT_TABLES / "05_populacional_por_agente.csv", index=False)
+def treinar_rf(treino: pd.DataFrame, feats: list[str], alvo: str = "CONS_MW"):
+    tr = treino.dropna(subset=feats + [alvo])
+    if len(tr) < 100:
+        return None
+    return novo_rf().fit(tr[feats], tr[alvo])
 
-    # ---------------- síntese ----------------
-    n = len(t)
-    print(f"\n{'='*64}\nPOPULACIONAL — {n} agentes\n{'='*64}")
-    for met, nome in [("CVR", "CV(RMSE)"), ("SP", "Credito espurio (% carga)")]:
-        e = t[f"{met}_1_estatica"].median(); a = t[f"{met}_2_aditivo"].median()
-        m = t[f"{met}_3_multiplicativo"].median()
-        print(f"{nome:28s} mediana: estatica={e:6.2f} | aditivo={a:6.2f} "
-              f"({100*(a-e)/e:+.0f}%) | mult={m:6.2f}")
-    vb_e = t["NMBE_1_estatica"].abs().median(); vb_a = t["NMBE_2_aditivo"].abs().median()
-    print(f"{'|NMBE| mediano':28s}        : estatica={vb_e:6.2f} | aditivo={vb_a:6.2f}")
 
-    melhora_cv = int((t["CVR_2_aditivo"] < t["CVR_1_estatica"]).sum())
-    melhora_vb = int((t["NMBE_2_aditivo"].abs() < t["NMBE_1_estatica"].abs()).sum())
-    print(f"\nAditivo melhora o CV(RMSE) em {melhora_cv}/{n} agentes")
-    print(f"Aditivo melhora o |vies|   em {melhora_vb}/{n} agentes")
+# --------------------------------------------------------------------------
+KNOTS = np.arange(cfg.TOWT_KNOTS_MIN, cfg.TOWT_KNOTS_MAX, cfg.TOWT_KNOTS_STEP)
 
-    # ---------------- boxplot ----------------
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    for ax, (met, nome) in zip(axes, [("CVR", "CV(RMSE) (%)"), ("NMBE", "NMBE (%)")]):
-        dados = [t[f"{met}_{k}"].dropna() for k in ROTULOS]
-        bp = ax.boxplot(dados, tick_labels=list(ROTULOS.values()), showmeans=True, patch_artist=True)
-        for p, c in zip(bp["boxes"], ["#c0392b", "#27ae60", "#2980b9"]):
-            p.set_facecolor(c); p.set_alpha(0.45)
-        ax.set_title(f"{nome} entre os {n} agentes"); ax.grid(alpha=0.3, axis="y")
-        if met == "NMBE": ax.axhline(0, color="k", lw=0.8, ls="--")
-    fig.suptitle("Eventos ficticios (14h-18h): distribuicao do erro por estimador")
-    fig.tight_layout()
-    f = cfg.OUT_FIGURES / "fig_boxplot_populacional.png"
-    fig.savefig(f, dpi=200); print(f"\n-> {f}")
-    print(f"-> {cfg.OUT_TABLES}/05_populacional_por_agente.csv")
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--ml", action="store_true", help="inclui RF e TOWT (lento)")
-    main(ap.parse_args().ml)
+class TOWT:
+    """Time-Of-Week and Temperature (CalTRACK 2.0 Hourly, adotado pelo CAISO).
+
+    X = [168 dummies de hora-da-semana | temp | hinges max(0, temp - knot) | umidade]
+
+    As funções-rampa (hinges) dão não linearidade térmica preservando a
+    extrapolação LINEAR fora da faixa de treino.
+    """
+
+    COLS = ["temp_c", "umid_rel", "dia_semana", "HORA"]
+
+    @staticmethod
+    def _X(d: pd.DataFrame) -> np.ndarray:
+        tow = (d["dia_semana"].astype(int) * 24 + d["HORA"].astype(int)).values
+        TOW = pd.get_dummies(pd.Categorical(tow, categories=range(168)),
+                             dtype=float).values
+        t = d["temp_c"].values.reshape(-1, 1)
+        hinges = np.maximum(0.0, t - KNOTS.reshape(1, -1))
+        hum = d["umid_rel"].values.reshape(-1, 1)
+        return np.hstack([TOW, t, hinges, hum])
+
+    def fit(self, d: pd.DataFrame, alvo: str = "CONS_MW"):
+        m = d[self.COLS + [alvo]].notna().all(axis=1)
+        d = d[m]
+        self.lr = LinearRegression().fit(self._X(d), d[alvo].values)
+        return self
+
+    def predict(self, d: pd.DataFrame) -> np.ndarray:
+        return self.lr.predict(self._X(d))
+
+
+# --------------------------------------------------------------------------
+def prever_recursivo(modelo, evento: pd.DataFrame, feats: list[str]) -> np.ndarray:
+    """Previsão em horas de evento CONSECUTIVAS, com recursão do lag_1h.
+
+    SALVAGUARDA CONTRA VAZAMENTO: dentro de um evento de múltiplas horas, o
+    lag_1h medido já está REDUZIDO (é o consumo suprimido da hora anterior).
+    Usá-lo rebaixaria artificialmente a linha de base e subestimaria a redução.
+    Aqui, o lag_1h é realimentado pela PRÓPRIA previsão contrafactual.
+
+    Aviso: lag_24h e lag_168h também podem cair em horas de evento quando há
+    despachos em dias seguidos (caso do ICB). Por isso o modelo completo NÃO é
+    usado na trilha financeira — apenas em eventos fictícios, onde os lags são
+    limpos por construção. Ver docs/ARMADILHAS.md.
+    """
+    ev = evento.sort_values("HORA").copy()
+    preds, anterior = [], {}
+    for _, r in ev.iterrows():
+        x = r[feats].copy()
+        h = int(r["HORA"])
+        if "lag_1h" in feats and (h - 1) in anterior:
+            x["lag_1h"] = anterior[h - 1]
+        X = pd.DataFrame([x], columns=feats).astype(float)
+        p = float(modelo.predict(X.fillna(0.0))[0])
+        anterior[h] = p
+        preds.append(p)
+    return np.asarray(preds)

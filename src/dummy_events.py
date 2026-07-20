@@ -1,5 +1,5 @@
 """
-Eventos fictícios (dummy events) — o motor da trilha de acurácia.
+Eventos fictícios (dummy events)
 
 Ideia (CAISO/CalTRACK): avaliar os estimadores em janelas de dias SEM despacho
 real. Ali a redução verdadeira é conhecidamente NULA, o que dá VERDADE DE CAMPO

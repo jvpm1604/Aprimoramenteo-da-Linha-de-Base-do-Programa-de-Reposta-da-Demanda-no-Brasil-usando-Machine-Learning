@@ -1,12 +1,12 @@
 """
 Script 02 — Engenharia de atributos + reconstrução da linha de base da CCEE.
 
-Entrada: data/interim/dataset_TCC_final_TCC.csv     (saída do script 00)
-Saída: data/processed/dataset_TCC_baseline_fiel.csv
+Entrada : data/interim/dataset_TCC_final_TCC.csv     (saída do script 00)
+Saída   : data/processed/dataset_TCC_baseline_fiel.csv
 
-Aqui é replicada a Baseline da CCEE atual, STATUS QUO (comparador) do trabalho: a linha de
-base regulatória reconstruída fielmente à norma (REN 1.040/2022 com apoio da NT-ONS 0049),
-e não uma aproximação simplificada. Sem isso, a comparação seria invalidável.
+Este é o script que produz o COMPARADOR DE STATUS QUO do trabalho: a linha de
+base regulatória reconstruída fielmente à norma (REN 1.040/2022 + NT-ONS 0049),
+e não uma aproximação simplificada. Sem isso, a comparação seria ilegítima.
 
 Uso:
     python scripts/02_features_e_baseline.py                # caso base (M-2)
